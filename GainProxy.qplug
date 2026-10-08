@@ -1,0 +1,468 @@
+-- Gain Proxy: a control-only front end for one named component control.
+-- Enable Script Access on the target. Select its Code Name and control on Setup.
+-- No audio pins, embedded DSP, bypass, mute, invert or audio meters.
+--
+-- dB mode reads/writes the target's actual Value in dB. Its source taper does
+-- not change the dB value, so only the presented taper changes the UI travel.
+-- Position mode reads/writes Value in 0..1, decoding/encoding with Source Taper.
+-- Set Min/Max Gain to the target's range; logarithmic uses Log Gain's mixer law,
+-- not an automatically detected or universal logarithmic control law.
+-- Binding and configuration changes read the target without writing to it.
+-- External changes are polled without taking over the target's EventHandler.
+
+PluginInfo = {
+    Name = "James Martin~Gain Proxy",
+    Version = "1.0.4",
+    BuildVersion = "1.0.4",
+    Id = "1120dc0e-bc17-4b85-805d-abf2f7657159",
+    Author = "James Martin",
+    Description = "Control-only gain proxy with independent source and presented tapers.",
+    ShowDebug = true
+}
+
+local LINEAR = "Linear (dB)"
+local LOG = "Logarithmic (Mixer)"
+local DB_MODE = "dB Value"
+local POSITION_MODE = "Position Value (0-1)"
+local LOG_LAW = {
+    { 1, 0 }, { 0.75, -10 }, { 0.5, -20 }, { 0.3, -30 },
+    { 0.2, -40 }, { 0.125, -50 }, { 0.05, -70 }
+}
+local SCALE_MARKS = { 20, 10, 5, 0, -5, -10, -20, -30, -40, -60, -100 }
+local PAGES = { "Control", "Fader", "Setup" }
+local KNOB_COLOR = { 124, 155, 206 }
+local ENTRY_COLOR = { 255, 251, 195 }
+
+local function clamp(v, low, high)
+    return math.max(low, math.min(high, v))
+end
+
+local function finite(v)
+    return type(v) == "number" and v == v and v > -math.huge and v < math.huge
+end
+
+local function buildTaper(minDb, maxDb, taper)
+    local points = {}
+    if taper == LOG then
+        for _, p in ipairs(LOG_LAW) do
+            if maxDb + p[2] > minDb then
+                points[#points + 1] = { pos = p[1], db = maxDb + p[2] }
+            end
+        end
+    else
+        points[1] = { pos = 1, db = maxDb }
+    end
+    points[#points + 1] = { pos = 0, db = minDb }
+    return points
+end
+
+local function positionToDb(points, pos)
+    pos = clamp(pos, 0, 1)
+    for i = 1, #points - 1 do
+        local hi, lo = points[i], points[i + 1]
+        if pos >= lo.pos then
+            return lo.db + (pos - lo.pos) / (hi.pos - lo.pos) * (hi.db - lo.db)
+        end
+    end
+    return points[#points].db
+end
+
+local function dbToPosition(points, db)
+    db = clamp(db, points[#points].db, points[1].db)
+    for i = 1, #points - 1 do
+        local hi, lo = points[i], points[i + 1]
+        if db >= lo.db then
+            return lo.pos + (db - lo.db) / (hi.db - lo.db) * (hi.pos - lo.pos)
+        end
+    end
+    return 0
+end
+
+local function gainRange(props)
+    return props["Min Gain (dB)"].Value, props["Max Gain (dB)"].Value
+end
+
+local function rampEnabled(props)
+    return props["Ramp Controls"].Value == "Yes"
+end
+
+local function discrete(props)
+    return rampEnabled(props) and props["Ramp Mode"].Value == "Discrete"
+end
+
+function GetColor(props)
+    return { 191, 226, 249 }
+end
+
+function GetPrettyName(props)
+    return "Gain Proxy  v" .. PluginInfo.Version
+end
+
+function GetProperties()
+    return {
+        { Name = "Presented Taper", Type = "enum", Choices = { LOG, LINEAR }, Value = LOG },
+        { Name = "Min Gain (dB)", Type = "integer", Min = -100, Max = 19, Value = -100 },
+        { Name = "Max Gain (dB)", Type = "integer", Min = -99, Max = 20, Value = 10 },
+        { Name = "Ramp Controls", Type = "enum", Choices = { "No", "Yes" }, Value = "No" },
+        { Name = "Ramp Mode", Type = "enum", Choices = { "Continuous", "Discrete" }, Value = "Continuous" },
+        { Name = "Number of Steps", Type = "integer", Min = 2, Max = 100, Value = 8 },
+        { Name = "Debug Print", Type = "enum", Choices = { "No", "Yes" }, Value = "No" }
+    }
+end
+
+function RectifyProperties(props)
+    props["Ramp Mode"].IsHidden = not rampEnabled(props)
+    props["Number of Steps"].IsHidden = not discrete(props)
+    return props
+end
+
+function GetPages(props)
+    local pages = {}
+    for _, name in ipairs(PAGES) do pages[#pages + 1] = { name = name } end
+    return pages
+end
+
+function GetPins(props) return {} end
+function GetComponents(props) return {} end
+function GetWiring(props) return {} end
+
+function GetControls(props)
+    local minDb, maxDb = gainRange(props)
+    -- Invalid ranges are reported at runtime; keep design-time control bounds valid.
+    local low, high = math.min(minDb, maxDb), math.max(minDb, maxDb)
+    if low == high then high = low + 1 end
+    local defaultDb = clamp(0, low, high)
+    local controls = {}
+    local function add(t)
+        t.Count = 1
+        t.PinStyle = t.PinStyle or "Both"
+        t.UserPin = true
+        controls[#controls + 1] = t
+    end
+    add({ Name = "fader", ControlType = "Knob", ControlUnit = "Position",
+        Min = 0, Max = 1, DefaultValue = dbToPosition(buildTaper(low, high, props["Presented Taper"].Value), defaultDb) })
+    add({ Name = "gain", ControlType = "Knob", ControlUnit = "dB", Min = low, Max = high, DefaultValue = defaultDb })
+    add({ Name = "ComponentName", ControlType = "Text" })
+    add({ Name = "ControlName", ControlType = "Text" })
+    add({ Name = "SourceMode", ControlType = "Text" })
+    add({ Name = "SourceTaper", ControlType = "Text" })
+    add({ Name = "Status", ControlType = "Indicator", IndicatorType = "Status", PinStyle = "Output" })
+    if rampEnabled(props) then
+        add({ Name = "increase", ControlType = "Button", ButtonType = "Momentary", PinStyle = "Input" })
+        add({ Name = "decrease", ControlType = "Button", ButtonType = "Momentary", PinStyle = "Input" })
+        add({ Name = "hold_off", ControlType = "Knob", ControlUnit = "Seconds", Min = 0, Max = 10, DefaultValue = 0.5 })
+        add({ Name = "ramp_time", ControlType = "Knob", ControlUnit = "Seconds", Min = 0.1, Max = 60, DefaultValue = 5 })
+        if discrete(props) then
+            add({ Name = "step_meter", ControlType = "Indicator", IndicatorType = "Meter",
+                Min = 0, Max = props["Number of Steps"].Value, PinStyle = "Output" })
+        end
+    end
+    return controls
+end
+
+function GetControlLayout(props)
+    local layout, graphics = {}, {}
+    local page = PAGES[props.page_index and props.page_index.Value or 1]
+    local function label(text, x, y, w, h, align, font)
+        graphics[#graphics + 1] = { Type = "Label", Text = text, Position = { x, y },
+            Size = { w, h or 16 }, FontSize = font or 11, Color = { 0, 0, 0 }, HTextAlign = align or "Right" }
+    end
+    local function text(name, x, y, w, h, color)
+        layout[name] = { Style = "Text", Position = { x, y }, Size = { w, h }, Color = color, FontSize = 11 }
+    end
+    local function ramps(x, y)
+        if not rampEnabled(props) then return y end
+        for _, row in ipairs({ { "Increase", "increase", "+" }, { "Decrease", "decrease", "-" },
+            { "Hold Off", "hold_off" }, { "Time", "ramp_time" } }) do
+            label(row[1], x, y, 72)
+            if row[3] then
+                layout[row[2]] = { Style = "Button", Legend = row[3], Color = { 200, 200, 200 },
+                    Position = { x + 80, y }, Size = { 36, 16 }, FontSize = 11 }
+            else
+                text(row[2], x + 80, y, 36, 16, ENTRY_COLOR)
+            end
+            y = y + 24
+        end
+        if discrete(props) then
+            label("Step", x, y, 72)
+            layout.step_meter = { Style = "Meter", MeterStyle = "Level", ShowTextbox = false,
+                Position = { x + 80, y }, Size = { 36, 16 } }
+            y = y + 24
+        end
+        return y
+    end
+    if page == "Setup" then
+        for i, row in ipairs({ { "Component", "ComponentName" }, { "Control", "ControlName" },
+            { "Target Value", "SourceMode" }, { "Source Taper", "SourceTaper" } }) do
+            local y = 8 + (i - 1) * 28
+            label(row[1], 8, y, 104, 16)
+            layout[row[2]] = { Style = "ComboBox", Position = { 120, y }, Size = { 240, 16 }, FontSize = 11 }
+        end
+        local instructions = {
+            "1. Enable Script Access on the target component.",
+            "   Select its Code Name and gain control above.",
+            "2. Choose dB Value for a gain measured in dB.",
+            "   For a 0-1 value, choose Position Value and set",
+            "   Source Taper to match the target's curve.",
+            "3. In Properties, match Min/Max Gain to the target.",
+            "   Choose Presented Taper for this knob and fader.",
+            "Logarithmic uses the same mixer curve as Log Gain."
+        }
+        for i, instruction in ipairs(instructions) do
+            label(instruction, 8, 128 + (i - 1) * 20, 352, 16, "Left", 11)
+        end
+        text("Status", 8, 296, 352, 16)
+        layout.Status.IsReadOnly = true
+    elseif page == "Fader" then
+        local minDb, maxDb = gainRange(props)
+        local lastY = math.huge
+        if minDb < maxDb then
+            local points = buildTaper(minDb, maxDb, props["Presented Taper"].Value)
+            for i = #SCALE_MARKS, 1, -1 do
+                local db = SCALE_MARKS[i]
+                local y = math.floor(22 + (1 - dbToPosition(points, db)) * 188 + 0.5)
+                if db >= minDb and db <= maxDb and lastY - y >= 12 then
+                    lastY = y
+                    label((db > 0 and "+" or "") .. db, 8, y - 6, 30, 12, "Right", 9)
+                    graphics[#graphics + 1] = { Type = "GroupBox", Fill = { 96, 96, 96 },
+                        StrokeWidth = 0, Position = { 40, y }, Size = { 6, 1 } }
+                end
+            end
+        end
+        layout.fader = { Style = "Fader", ShowTextbox = false, Position = { 48, 16 }, Size = { 36, 200 } }
+        text("gain", 48, 224, 36, 16, ENTRY_COLOR)
+        local bottom = math.max(248, ramps(92, 8))
+        text("Status", 8, bottom, 200, 16)
+        layout.Status.IsReadOnly = true
+    else
+        label("Gain", 8, 18, 72)
+        layout.fader = { Style = "Knob", Color = KNOB_COLOR, Position = { 88, 8 }, Size = { 36, 36 } }
+        label("Gain (dB)", 8, 52, 72)
+        text("gain", 88, 52, 36, 16, ENTRY_COLOR)
+        local bottom = ramps(8, 76)
+        text("Status", 8, bottom, 180, 16)
+        layout.Status.IsReadOnly = true
+    end
+    return layout, graphics
+end
+
+if Controls then
+    local minDb, maxDb = gainRange(Properties)
+    local rangeValid = minDb < maxDb
+    local DEBUG = Properties["Debug Print"].Value == "Yes"
+    local target, metadata, sourcePoints, presentedPoints
+    local syncing = false
+    local rampDirection, pressedAt, lastTick, nextStepAt = 0, 0, 0, 0
+    local RAMP = rampEnabled(Properties)
+    local DISCRETE = discrete(Properties)
+    local STEPS = Properties["Number of Steps"].Value
+    local TICK = 0.05
+    local function trim(s) return (s or ""):match("^%s*(.-)%s*$") end
+    local function status(code, message)
+        if Controls.Status.Value ~= code or Controls.Status.String ~= message then
+            if code ~= 0 or DEBUG then print("Gain Proxy: " .. message) end
+        end
+        Controls.Status.Value = code
+        Controls.Status.String = message
+    end
+    local function disable(value)
+        for _, name in ipairs({ "fader", "gain", "increase", "decrease" }) do
+            if Controls[name] then Controls[name].IsDisabled = value end
+        end
+    end
+    local function stopRamp()
+        rampDirection = 0
+        if GainProxyRampTimer then GainProxyRampTimer:Stop() end
+    end
+    local function fault(message)
+        target = nil
+        stopRamp()
+        disable(true)
+        status(2, message)
+    end
+    local function numericControl(c)
+        return c.Type == "Float" and c.Direction ~= "Read Only" and c.Direction ~= "Write Only"
+    end
+    local function display(db)
+        syncing = true
+        Controls.gain.Value = db
+        Controls.fader.Value = dbToPosition(presentedPoints, db)
+        if DISCRETE then
+            Controls.step_meter.Position = clamp(math.floor(Controls.fader.Value * STEPS + 0.5) / STEPS, 0, 1)
+        end
+        syncing = false
+    end
+    local function readTarget()
+        local ok, value = pcall(function() return target.Value end)
+        if not ok or not finite(value) then
+            fault("Cannot read target value: " .. tostring(value))
+            return false
+        end
+        local db = value
+        if Controls.SourceMode.String == POSITION_MODE then
+            if value < 0 or value > 1 then
+                fault("Target Value is outside 0-1; check Target Value mode.")
+                return false
+            end
+            db = positionToDb(sourcePoints, value)
+        end
+        if db < minDb - 1e-6 or db > maxDb + 1e-6 then
+            fault("Target dB is outside Min/Max Gain; match the proxy range to the target.")
+            return false
+        end
+        display(clamp(db, minDb, maxDb))
+        disable(false)
+        status(0, trim(Controls.ComponentName.String) .. " / " .. trim(Controls.ControlName.String))
+        return true
+    end
+    local function bind()
+        target = nil
+        stopRamp()
+        disable(true)
+        local usesSourceTaper = Controls.SourceMode.String == POSITION_MODE
+        Controls.SourceTaper.IsDisabled = not usesSourceTaper
+        if not rangeValid then fault("Min Gain must be less than Max Gain."); return end
+        if Controls.SourceMode.String ~= DB_MODE and Controls.SourceMode.String ~= POSITION_MODE then
+            fault("Choose a valid Target Value mode on Setup."); return
+        end
+        if usesSourceTaper and Controls.SourceTaper.String ~= LINEAR and Controls.SourceTaper.String ~= LOG then
+            fault("Choose a valid Source Taper on Setup."); return
+        end
+        sourcePoints = buildTaper(minDb, maxDb, Controls.SourceTaper.String)
+        presentedPoints = buildTaper(minDb, maxDb, Properties["Presented Taper"].Value)
+        local name, controlName = trim(Controls.ComponentName.String), trim(Controls.ControlName.String)
+        if name == "" then status(3, "Choose a component on Setup."); return end
+        local ok, list = pcall(Component.GetControls, name)
+        if not ok or type(list) ~= "table" or #list == 0 then
+            Controls.ControlName.Choices = {}
+            fault("Cannot discover '" .. name .. "' (check Code Name / Script Access): " .. tostring(list))
+            return
+        end
+        local choices = {}
+        metadata = nil
+        for _, c in ipairs(list) do
+            if numericControl(c) then choices[#choices + 1] = c.Name end
+            if c.Name == controlName then metadata = c end
+        end
+        table.sort(choices)
+        Controls.ControlName.Choices = choices
+        if controlName == "" then status(3, "Choose a writable Float control on Setup."); return end
+        if not metadata or not numericControl(metadata) then
+            fault("Control '" .. controlName .. "' is missing or is not a readable/writable Float.")
+            return
+        end
+        local low = Controls.SourceMode.String == DB_MODE and minDb or 0
+        local high = Controls.SourceMode.String == DB_MODE and maxDb or 1
+        if (finite(metadata.MinValue) and low < metadata.MinValue - 1e-6)
+            or (finite(metadata.MaxValue) and high > metadata.MaxValue + 1e-6) then
+            fault("Proxy range exceeds target limits; check Min/Max Gain and Target Value mode.")
+            return
+        end
+        local connected, result = pcall(function()
+            return Component.New(name)[controlName]
+        end)
+        if not connected or not result then
+            fault("Cannot bind '" .. name .. " / " .. controlName .. "': " .. tostring(result))
+            return
+        end
+        target = result
+        readTarget()
+    end
+    local function writeDb(db)
+        if syncing then return end
+        if not target then status(2, "Target unavailable; choose a valid assignment on Setup."); return end
+        if not finite(db) then fault("Requested gain is not a finite number."); return end
+        db = clamp(db, minDb, maxDb)
+        local value = Controls.SourceMode.String == POSITION_MODE and dbToPosition(sourcePoints, db) or db
+        local ok, err = pcall(function() target.Value = value end)
+        if not ok then fault("Cannot write target: " .. tostring(err)); return end
+        readTarget()
+    end
+    Controls.fader.EventHandler = function(ctl)
+        if syncing then return end
+        if not finite(ctl.Value) then fault("Requested position is not a finite number."); return end
+        if not presentedPoints then status(2, "Configure the proxy on Setup first."); return end
+        writeDb(positionToDb(presentedPoints, ctl.Value))
+    end
+    Controls.gain.EventHandler = function(ctl) writeDb(ctl.Value) end
+    if RAMP then
+        local function step(direction)
+            if DISCRETE then
+                local scaled = Controls.fader.Value * STEPS
+                local n = direction > 0 and math.floor(scaled + 1e-6) + 1 or math.ceil(scaled - 1e-6) - 1
+                writeDb(positionToDb(presentedPoints, clamp(n, 0, STEPS) / STEPS))
+            else
+                writeDb(Controls.gain.Value + direction)
+            end
+        end
+        GainProxyRampTimer = Timer.New()
+        GainProxyRampTimer.EventHandler = function()
+            if not target or rampDirection == 0 then stopRamp(); return end
+            local now = Timer.Now()
+            local start = pressedAt + Controls.hold_off.Value
+            if now >= start then
+                if DISCRETE then
+                    if now >= math.max(start, nextStepAt) then
+                        step(rampDirection)
+                        nextStepAt = now + math.max(0.1, Controls.ramp_time.Value) / STEPS
+                    end
+                else
+                    local elapsed = now - math.max(lastTick, start)
+                    writeDb(positionToDb(presentedPoints, Controls.fader.Value
+                        + rampDirection * elapsed / math.max(0.1, Controls.ramp_time.Value)))
+                end
+            end
+            lastTick = now
+        end
+        local function button(direction, ctl)
+            if ctl.Boolean then
+                if not target then status(2, "Cannot ramp: target unavailable."); return end
+                rampDirection = direction
+                pressedAt, lastTick = Timer.Now(), Timer.Now()
+                nextStepAt = pressedAt + Controls.hold_off.Value
+                step(direction)
+                if target then GainProxyRampTimer:Start(TICK) end
+            elseif rampDirection == direction then stopRamp() end
+        end
+        Controls.increase.EventHandler = function(ctl) button(1, ctl) end
+        Controls.decrease.EventHandler = function(ctl) button(-1, ctl) end
+    end
+    local function refreshComponents()
+        local ok, list = pcall(Component.GetComponents)
+        if not ok or type(list) ~= "table" then
+            fault("Cannot list components: " .. tostring(list))
+            return
+        end
+        local choices = {}
+        for _, c in ipairs(list) do
+            -- Exclude Gain Proxy instances to prevent proxy-to-proxy feedback loops.
+            if not tostring(c.Type):find(PluginInfo.Id, 1, true) then choices[#choices + 1] = c.Name end
+        end
+        table.sort(choices)
+        Controls.ComponentName.Choices = choices
+    end
+    Controls.ComponentName.EventHandler = function()
+        Controls.ControlName.String = ""
+        bind()
+    end
+    Controls.ControlName.EventHandler = bind
+    Controls.SourceMode.EventHandler = bind
+    Controls.SourceTaper.EventHandler = bind
+    Controls.SourceMode.Choices = { DB_MODE, POSITION_MODE }
+    Controls.SourceTaper.Choices = { LINEAR, LOG }
+    if Controls.SourceMode.String == "" then Controls.SourceMode.String = DB_MODE end
+    if Controls.SourceTaper.String == "" then Controls.SourceTaper.String = LINEAR end
+    refreshComponents()
+    bind()
+    -- Keep timers global: Q-SYS may collect locally held timer objects.
+    GainProxyPollTimer = Timer.New()
+    local retryAt = Timer.Now() + 1
+    GainProxyPollTimer.EventHandler = function()
+        if target then readTarget() end
+        if Timer.Now() >= retryAt then
+            retryAt = Timer.Now() + 1
+            if not target then refreshComponents(); bind() end
+        end
+    end
+    GainProxyPollTimer:Start(0.1)
+end
