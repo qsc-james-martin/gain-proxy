@@ -12,8 +12,8 @@
 
 PluginInfo = {
     Name = "James Martin~Gain Proxy",
-    Version = "1.0.4",
-    BuildVersion = "1.0.4",
+    Version = "1.0.5",
+    BuildVersion = "1.0.5",
     Id = "1120dc0e-bc17-4b85-805d-abf2f7657159",
     Author = "James Martin",
     Description = "Control-only gain proxy with independent source and presented tapers.",
@@ -177,7 +177,7 @@ function GetControlLayout(props)
             label(row[1], x, y, 72)
             if row[3] then
                 layout[row[2]] = { Style = "Button", Legend = row[3], Color = { 200, 200, 200 },
-                    Position = { x + 80, y }, Size = { 36, 16 }, FontSize = 11 }
+                    Position = { x + 80, y }, Size = { 36, 16 }, FontSize = 9 }
             else
                 text(row[2], x + 80, y, 36, 16, ENTRY_COLOR)
             end
