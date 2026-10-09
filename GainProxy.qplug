@@ -11,9 +11,9 @@
 -- External changes are polled without taking over the target's EventHandler.
 
 PluginInfo = {
-    Name = "James Martin~Gain Proxy",
-    Version = "1.0.5",
-    BuildVersion = "1.0.5",
+    Name = "Utility~Gain Proxy",
+    Version = "1.0.6",
+    BuildVersion = "1.0.6",
     Id = "1120dc0e-bc17-4b85-805d-abf2f7657159",
     Author = "James Martin",
     Description = "Control-only gain proxy with independent source and presented tapers.",
