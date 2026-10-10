@@ -12,8 +12,8 @@
 
 PluginInfo = {
     Name = "Utility~Gain Proxy",
-    Version = "1.0.6",
-    BuildVersion = "1.0.6",
+    Version = "1.0.9",
+    BuildVersion = "1.0.9",
     Id = "1120dc0e-bc17-4b85-805d-abf2f7657159",
     Author = "James Martin",
     Description = "Control-only gain proxy with independent source and presented tapers.",
@@ -200,18 +200,20 @@ function GetControlLayout(props)
         end
         local instructions = {
             "1. Enable Script Access on the target component.",
-            "   Select its Code Name and gain control above.",
+            "Select its Code Name and gain control above.",
+            "",
             "2. Choose dB Value for a gain measured in dB.",
-            "   For a 0-1 value, choose Position Value and set",
-            "   Source Taper to match the target's curve.",
+            "For a 0-1 value, choose Position Value and set",
+            "Source Taper to match the target's curve.",
+            "",
             "3. In Properties, match Min/Max Gain to the target.",
-            "   Choose Presented Taper for this knob and fader.",
+            "Choose Presented Taper for this knob and fader.",
+            "",
             "Logarithmic uses the same mixer curve as Log Gain."
         }
-        for i, instruction in ipairs(instructions) do
-            label(instruction, 8, 128 + (i - 1) * 20, 352, 16, "Left", 11)
-        end
-        text("Status", 8, 296, 352, 16)
+        label(table.concat(instructions, "\n"), 8, 128, 352, 152, "Left", 11)
+        graphics[#graphics].VTextAlign = "Top"
+        text("Status", 8, 288, 352, 16)
         layout.Status.IsReadOnly = true
     elseif page == "Fader" then
         local minDb, maxDb = gainRange(props)
@@ -229,19 +231,44 @@ function GetControlLayout(props)
                 end
             end
         end
-        layout.fader = { Style = "Fader", ShowTextbox = false, Position = { 48, 16 }, Size = { 36, 200 } }
         text("gain", 48, 224, 36, 16, ENTRY_COLOR)
         local bottom = math.max(248, ramps(92, 8))
         text("Status", 8, bottom, 200, 16)
         layout.Status.IsReadOnly = true
     else
         label("Gain", 8, 18, 72)
-        layout.fader = { Style = "Knob", Color = KNOB_COLOR, Position = { 88, 8 }, Size = { 36, 36 } }
         label("Gain (dB)", 8, 52, 72)
         text("gain", 88, 52, 36, 16, ENTRY_COLOR)
         local bottom = ramps(8, 76)
         text("Status", 8, bottom, 180, 16)
         layout.Status.IsReadOnly = true
+    end
+    if page == "Control" or page == "Fader" then
+        local isFader = page == "Fader"
+        layout.fader = {
+            Style = isFader and "Fader" or "Knob",
+            Color = not isFader and KNOB_COLOR or nil,
+            Position = isFader and { 48, 16 } or { 88, 8 },
+            Size = isFader and { 36, 200 } or { 36, 36 }
+        }
+        if isFader then layout.fader.ShowTextbox = false end
+    end
+    local prettyNames = {
+        fader = "Gain~Fader Position",
+        gain = "Gain~Gain",
+        increase = "Ramp~Increase",
+        decrease = "Ramp~Decrease",
+        hold_off = "Ramp~Hold Off",
+        ramp_time = "Ramp~Time",
+        step_meter = "Ramp~Step Meter",
+        ComponentName = "Setup~Component",
+        ControlName = "Setup~Control",
+        SourceMode = "Setup~Target Value",
+        SourceTaper = "Setup~Source Taper",
+        Status = "Status"
+    }
+    for name, entry in pairs(layout) do
+        entry.PrettyName = prettyNames[name]
     end
     return layout, graphics
 end
